@@ -1,0 +1,5 @@
+1. Open een lege werkmap in Excel (dus niet dubbelklikken op het bestand!)
+2. Ga naar Gegevens > uit tekstbestand/CSV
+3. Selecteer je CSV-bestand
+4. Kies het juiste scheidingsteken (meestal puntkomma of komma) → belangrijk!
+5. Klik op Laden

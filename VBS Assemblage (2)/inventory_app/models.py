@@ -1,5 +1,6 @@
 from contextlib import closing
 from db import get_conn
+   #Designed By Petra Molegraaf ©
 
 def create_bom(parent_product_id, components):
     """Maak een BOM(Bill of Materials) aan voor een samengesteld product.
@@ -8,7 +9,21 @@ def create_bom(parent_product_id, components):
     """
     with closing(get_conn()) as conn:
         cur = conn.cursor()
+
+        #Controleer of parent bestaat
+        cur.execute("SELECT id FROM products WHERE id=?", (parent_product_id))
+        if not cur.fetchone():
+            raise ValueError("Hoofdproduct bestaat niet")
+        
         for comp_id, qty in components:
+            cur.execute("SELECT id FROM products WHERE id=?", (comp_id))
+            if not cur.fetchone():
+                raise ValueError
+            
+            cur.execute("""SELECT 1 FROM bom WHERE parent_product_id=? AND component_product_id=?""", (parent_product_id, comp_id))
+            if cur.fetchone():
+                raise ValueError(f"Component {comp_id} staat al in BOM")
+
             cur.execute(
                 "INSERT INTO bom (parent_product_id, component_product_id, quantity) VALUES (?,?,?)",
                 (parent_product_id, comp_id, qty)
@@ -27,12 +42,12 @@ def get_bom(parent_product_id):
         return cur.fetchall()
 
 
-def add_product(sku, name, description="", quantity=0, min_stock=0, location=""):
+def add_product(sku, name, description="", quantity=0, min_stock=0, location="", is_finished=0):
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO products(sku, name, description, quantity, min_stock, location) VALUES (?,?,?,?,?,?)",
-            (sku, name, description, quantity, min_stock, location)
+            "INSERT INTO products(sku, name, description, quantity, min_stock, location, is_finished) VALUES (?,?,?,?,?,?,?)",
+            (sku, name, description, quantity, min_stock, location, is_finished)
         )
         conn.commit()
         return cur.lastrowid
@@ -77,7 +92,7 @@ def adjust_quantity(pid, change, typ="manual", note=""):
         conn.commit()
 
 # Orders en safe stock adjustment
-def create_order(customer, items):
+def create_order(order_number, items):
     """items: list van dicts:[{'product_id': id, 'quantity': q, 'price': p}]
     Retourneert order_id. Rollback on error (e.g., insufficient stock)"""
     with get_conn() as conn:
@@ -99,7 +114,7 @@ def create_order(customer, items):
             total = sum((it.get('price', 0) * it['quantity']) for it in items)
             cur.execute(
                 "INSERT INTO orders(customer, status, total) VALUES (?,?,?)",
-                (customer, 'created', total)
+                (order_number, 'created', total)
             )
             order_id = cur.lastrowid
 
@@ -134,16 +149,17 @@ def list_orders(status=None):
         return cur.fetchall()
 
 def get_order_items(order_id):
-    with get_conn() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """SELECT oi.id, oi.product_id, p.sku, p.name, oi.quantity, oi.price
-               FROM order_items oi
-               JOIN products p ON oi.product_id = p.id
-               WHERE oi.order_id=?""",
-            (order_id,)
-        )
-        return cur.fetchall()
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT p.id, p.name, oi.quantity, oi.price
+        FROM order_items oi
+        JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ?
+        """, (order_id,))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
 
 def cancel_order(order_id):
     """Optioneel: als order nog 'created' kan geannuleerd worden -> voorraad terugboeken."""
@@ -158,9 +174,11 @@ def cancel_order(order_id):
             raise ValueError("Order kan niet geannuleerd worden (status != created)")
 
         items = get_order_items(order_id)
-        for it in items:
-            prod_id = it[1]
-            qty = it[4]
+        for name, qty, price in items:
+            #product_id moet je opnieuw ophalen
+            cur.execute("SELECT id FROM products WHERE name=?", (name,))
+            prod_id = cur.fetchone()[0]
+
             cur.execute("UPDATE products SET quantity = quantity + ? WHERE id=?", (qty, prod_id))
             cur.execute(
                 "INSERT INTO transactions (product_id, change, type, note) VALUES (?,?,?,?)",
@@ -168,4 +186,34 @@ def cancel_order(order_id):
             )
 
         cur.execute("UPDATE orders SET status='cancelled' WHERE id=?", (order_id,))
+        conn.commit()
+
+def delete_order(order_id):
+    """Verwijder een order volledig uit de database.
+    Alleen toegestaan als status 'cancelled' is.
+    (Geen voorraadcorrecties — dat hoort bij cancel_order.)
+    """
+    with get_conn() as conn:
+        cur = conn.cursor()
+
+        # Bestaat de order?
+        cur.execute("SELECT status FROM orders WHERE id=?", (order_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Order niet gevonden")
+
+        status = row[0]
+
+        # Alleen verwijderen als order niet meer actief is
+        if status != "cancelled":
+            raise ValueError(
+                f"Order met status '{status}' kan niet verwijderd worden"
+            )
+
+        # Verwijder items
+        cur.execute("DELETE FROM order_items WHERE order_id=?", (order_id,))
+
+        # Verwijder order
+        cur.execute("DELETE FROM orders WHERE id=?", (order_id,))
+
         conn.commit()

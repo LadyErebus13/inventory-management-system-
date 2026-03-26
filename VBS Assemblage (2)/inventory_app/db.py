@@ -70,5 +70,6 @@ def init_db():
         """)
         conn.commit()
 
+
 def get_conn():
     return sqlite3.connect(DB)

@@ -11,7 +11,7 @@ def process_bom_transaction(order_id):
 
         # Haal alle orderregels op voor de gegeven order_id
         cur.execute("""
-        SELECT product_id, qty FROM order_items WHERE order_id = ? """, (order_id,))
+        SELECT product_id, quantity FROM order_items WHERE order_id = ? """, (order_id,))
         order_items = cur.fetchall()
 
         for product_id, qty in order_items:
@@ -35,4 +35,22 @@ def process_bom_transaction(order_id):
                 
                 cur.execute("""INSERT INTO transactions(product_id, change, type, note) 
                             VALUES(?, ?, 'out', ?)""", (comp_id, -total_comp_qty, f"Order {order_id} (BOM)"))
-    conn.commit()
+                
+def get_order_details(order_id):
+        """Haal een order + orderregels op, inclusief productnamen.
+        Geeft None terug al de order niet bestaat."""
+        with closing(get_conn()) as conn:
+             cur = conn.cursor()
+             #Order ophalen
+             cur.execute("""SELECT id, order_number, status, total, created_at From orders WHERE id = ?""", (order_id,))
+             order = cur.fetchone()
+             if not order:
+                  return None
+             
+             #Orderregels ophalen
+             cur.execute("""SELECT oi.product_id, p.name, oi.quantity, oi.price FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?""", (order_id,))
+             items = cur.fetchall()
+
+             return{"order": order, "items": items}
+
+        conn.commit()
